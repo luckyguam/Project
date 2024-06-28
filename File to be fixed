@@ -1,0 +1,153 @@
+using Azure.Identity;
+using ClosedXML.Excel;
+using Microsoft.Graph;
+
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        // SharePoint site URL
+        string siteUrl = "organizationname.sharepoint.com";
+
+        // Azure AD tenant ID and client ID (application ID)
+        string tenantId = "your_tenant_id";
+        string clientId = "your_client_id";
+
+        // Client secret for authentication (you should handle securely in production)
+        string clientSecret = "your_client_secret";
+
+        try
+        {
+            // Initialize client application using Client Secret Credential
+            var clientCredential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+            var graphClient = new GraphServiceClient(clientCredential);
+
+            // SharePoint site ID (using the domain part of the site URL)
+            string siteId = $"https://{siteUrl}";
+
+            // SharePoint drive ID and Excel file path
+            string driveId = "your_drive_id"; // Replace with your SharePoint drive ID
+            string filePath = "/sites/YourSite/Shared Documents/ExcelWorkbook.xlsx"; // Replace with your SharePoint file path
+
+            // Get the DriveItem (Excel file) using Graph API
+            var driveItem = await graphClient.Sites[siteId].Drives[driveId]
+            .Root // Use .Root to refer to the root of the drive
+            .ItemWithPath(filePath) // Specify the path to the file within the drive
+            .Request()
+            .GetAsync();
+
+
+
+            // Read Excel file content using Graph API
+            using (Stream excelStream = await graphClient.Drives[driveId].Items[driveItem.Id]
+                .Workbook
+                .Worksheets["Sheet1"] // Replace with your worksheet name if different
+                .UsedRange
+                .Content
+                .Request()
+                .GetAsync())
+            {
+                // Read and search through the Excel file using ClosedXML
+                using (var workbook = new XLWorkbook(excelStream))
+                {
+                    var worksheet = workbook.Worksheet(1); // Assuming the data is in the first worksheet
+
+                    bool stop = false;
+
+                    while (!stop)
+                    {
+                        Console.WriteLine("Enter the Model Number to find corresponding Firmware Number (Type '1' to stop):");
+                        string modelNumberInput = Console.ReadLine().Trim();
+
+                        if (modelNumberInput == "1")
+                        {
+                            stop = true;
+                            continue;
+                        }
+
+                        bool foundModel = false;
+                        string firmwareNumber = null;
+
+                        // Check if the model number exists
+                        foreach (var row in worksheet.RowsUsed())
+                        {
+                            var rowModelNumberCell = row.Cell(7); // Assuming model number is in column G (7th column)
+                            var firmwareNumberCell = row.Cell(2); // Assuming firmware number is in column B (2nd column)
+
+                            if (!rowModelNumberCell.IsEmpty())
+                            {
+                                string rowModelNumber = rowModelNumberCell.GetString();
+
+                                // Case-insensitive comparison
+                                if (string.Equals(rowModelNumber, modelNumberInput, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    foundModel = true;
+                                    firmwareNumber = firmwareNumberCell.GetString();
+
+                                    // If current row has firmware, use it
+                                    if (!string.IsNullOrEmpty(firmwareNumber))
+                                    {
+                                        Console.WriteLine($"{rowModelNumber}'s Firmware = {firmwareNumber}");
+                                        break; // Exit loop if firmware found in current row
+                                    }
+                                    else
+                                    {
+                                        // Search for firmware in previous rows 
+                                        bool foundFirmware = FindFirmwareInPreviousRows(worksheet, row.RowNumber(), out firmwareNumber);
+
+                                        if (foundFirmware)
+                                        {
+                                            Console.WriteLine($"{rowModelNumber}'s Firmware = {firmwareNumber}");
+                                        }
+                                        else
+                                        {
+                                            firmwareNumber = "No firmware found"; // Default message if no firmware found
+                                            Console.WriteLine($"{rowModelNumber}'s Firmware = {firmwareNumber}");
+                                        }
+
+                                        break; // Exit outer loop once processing is done
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!foundModel)
+                        {
+                            Console.WriteLine($"Model Number '{modelNumberInput}' not found in the Excel file.");
+                        }
+                    }
+
+                    Console.WriteLine("Program stopped.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error: {ex.Message}");
+        }
+    }
+
+    // Method to find firmware in previous rows
+    static bool FindFirmwareInPreviousRows(IXLWorksheet worksheet, int currentRowNumber, out string firmwareNumber)
+    {
+        firmwareNumber = null;
+
+        for (int rowNum = currentRowNumber - 1; rowNum >= 1; rowNum--)
+        {
+            var row = worksheet.Row(rowNum);
+            var firmwareNumberCell = row.Cell(2); // Assuming firmware number is in column B (2nd column)
+
+            if (!firmwareNumberCell.IsEmpty())
+            {
+                firmwareNumber = firmwareNumberCell.GetString();
+                if (!string.IsNullOrEmpty(firmwareNumber))
+                {
+                    return true; // Found firmware in previous row
+                }
+            }
+        }
+
+        return false; // No firmware found in previous rows
+    }
+}
