@@ -1,126 +1,185 @@
-using Azure.Identity;
-using ClosedXML.Excel;
-using Microsoft.Graph;
-
+using DocumentFormat.OpenXml.Drawing;
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Transactions;
 
 class Program
 {
-    static async Task Main(string[] args)
+    static void Main(string[] args)
     {
-        // SharePoint site URL
-        string siteUrl = "organizationname.sharepoint.com";
 
-        // Azure AD tenant ID and client ID (application ID)
-        string tenantId = "your_tenant_id";
-        string clientId = "your_client_id";
+        string filePathText = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\Downloads\FilePath.txt";
+        string csvFilePath = ReadOrPromptForFilePath(filePathText);
 
-        // Client secret for authentication (you should handle securely in production)
-        string clientSecret = "your_client_secret";
+        // Ensure the file path is not empty
+        if (!string.IsNullOrEmpty(csvFilePath))
+        {
+            
+            // Remove double quotes from the file path if present
+            csvFilePath = csvFilePath.Trim('"');
+
+            // Check if the file extension is .csv
+            string fileExtension = System.IO.Path.GetExtension(csvFilePath);
+            if (!fileExtension.Equals(".csv", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"Error: Extension '{fileExtension}' is not supported. Please provide a CSV file.");
+                RetryInput(filePathText);
+                return;
+            }
+
+            // Check if the file exists
+            if (!File.Exists(csvFilePath))
+            {
+                Console.WriteLine($"Error: The file '{csvFilePath}' was not found.");
+                RetryInput(filePathText);
+                return;
+            }
+
+            Console.WriteLine($"Using CSV file located at: {csvFilePath}");
+            // Proceed with further operations using csvFilePath
+
+        }
+        else
+        {
+            Console.WriteLine("File path cannot be empty. Please enter the path to the CSV file:");
+            csvFilePath = Console.ReadLine().Trim();
+            File.WriteAllText(filePathText, csvFilePath);
+            Console.WriteLine("File Path saved.");
+
+            // Retry if the file path is empty or invalid
+            RetryInput(filePathText);
+        }
+
+
+
+
+        static void RetryInput(string filePathText)
+        {
+            Console.WriteLine("Please enter a valid path to a CSV file:");
+            string csvFilePath = Console.ReadLine().Trim();
+
+            // Update the file path text file with the new input
+            File.WriteAllText(filePathText, csvFilePath);
+
+            // Recursive call to re-validate and retry input
+            Main(new string[0]);
+        }
+
+
+
+        // Remove double quotes from the file path if present
+        csvFilePath = csvFilePath.Trim('"');
+
+        
 
         try
         {
-            // Initialize client application using Client Secret Credential
-            var clientCredential = new ClientSecretCredential(tenantId, clientId, clientSecret);
-            var graphClient = new GraphServiceClient(clientCredential);
-
-            // SharePoint site ID (using the domain part of the site URL)
-            string siteId = $"https://{siteUrl}";
-
-            // SharePoint drive ID and Excel file path
-            string driveId = "your_drive_id"; // Replace with your SharePoint drive ID
-            string filePath = "/sites/YourSite/Shared Documents/ExcelWorkbook.xlsx"; // Replace with your SharePoint file path
-
-            // Get the DriveItem (Excel file) using Graph API
-            var driveItem = await graphClient.Sites[siteId].Drives[driveId]
-            .Root // Use .Root to refer to the root of the drive
-            .ItemWithPath(filePath) // Specify the path to the file within the drive
-            .Request()
-            .GetAsync();
-
-
-
-            // Read Excel file content using Graph API
-            using (Stream excelStream = await graphClient.Drives[driveId].Items[driveItem.Id]
-                .Workbook
-                .Worksheets["Sheet1"] // Replace with your worksheet name if different
-                .UsedRange
-                .Content
-                .Request()
-                .GetAsync())
+            using (var reader = new StreamReader(csvFilePath))
             {
-                // Read and search through the Excel file using ClosedXML
-                using (var workbook = new XLWorkbook(excelStream))
+                var csvLines = reader.ReadToEnd().Split(new[] { Environment.NewLine }, StringSplitOptions.None);
+
+                bool stop = false;
+                Console.WriteLine("Enter the Model Number to find the corresponding Firmware Number (Type '1' to stop):");
+                string modelNumberInput = Console.ReadLine().Trim();
+                while (!stop)
                 {
-                    var worksheet = workbook.Worksheet(1); // Assuming the data is in the first worksheet
+                    
 
-                    bool stop = false;
-
-                    while (!stop)
+                    if (modelNumberInput == "1")
                     {
-                        Console.WriteLine("Enter the Model Number to find corresponding Firmware Number (Type '1' to stop):");
-                        string modelNumberInput = Console.ReadLine().Trim();
+                        stop = true;
+                        continue;
+                    }
 
-                        if (modelNumberInput == "1")
+                    bool foundModel = false;
+                    string firmwareNumber = null;
+                    string firmwareFileName = null;
+
+                    // Check if the model number exists
+                    for (int i = 0; i < csvLines.Length; i++)
+                    {
+                        var values = csvLines[i].Split(',');
+
+                        // Ensure there are enough columns
+                        if (values.Length >= 7)
                         {
-                            stop = true;
-                            continue;
-                        }
+                            string rowModelNumber = values[6]; // Model number in column G
+                            firmwareNumber = values[1]; // Firmware number in column B
+                            firmwareFileName = values[3]; // Firmware file name in column D
 
-                        bool foundModel = false;
-                        string firmwareNumber = null;
-
-                        // Check if the model number exists
-                        foreach (var row in worksheet.RowsUsed())
-                        {
-                            var rowModelNumberCell = row.Cell(7); // Assuming model number is in column G (7th column)
-                            var firmwareNumberCell = row.Cell(2); // Assuming firmware number is in column B (2nd column)
-
-                            if (!rowModelNumberCell.IsEmpty())
+                            // Case-insensitive comparison
+                            if (string.Equals(rowModelNumber, modelNumberInput, StringComparison.OrdinalIgnoreCase))
                             {
-                                string rowModelNumber = rowModelNumberCell.GetString();
+                                foundModel = true;
 
-                                // Case-insensitive comparison
-                                if (string.Equals(rowModelNumber, modelNumberInput, StringComparison.OrdinalIgnoreCase))
+                                if (!string.IsNullOrEmpty(firmwareNumber))
                                 {
-                                    foundModel = true;
-                                    firmwareNumber = firmwareNumberCell.GetString();
+                                    Console.WriteLine($"{rowModelNumber}'s Firmware Number = {firmwareNumber}, Firmware File = {firmwareFileName}");
+                                    break;
+                                }
+                                else
+                                {
+                                    // Search for firmware in previous rows 
+                                    bool foundFirmware = FindFirmwareInPreviousRows(csvLines, i, out firmwareNumber, out firmwareFileName);
 
-                                    // If current row has firmware, use it
-                                    if (!string.IsNullOrEmpty(firmwareNumber))
+                                    if (foundFirmware)
                                     {
-                                        Console.WriteLine($"{rowModelNumber}'s Firmware = {firmwareNumber}");
-                                        break; // Exit loop if firmware found in current row
+                                        Console.WriteLine($"{rowModelNumber}'s Firmware Number = {firmwareNumber}, Firmware File = {firmwareFileName}");
                                     }
                                     else
                                     {
-                                        // Search for firmware in previous rows 
-                                        bool foundFirmware = FindFirmwareInPreviousRows(worksheet, row.RowNumber(), out firmwareNumber);
-
-                                        if (foundFirmware)
-                                        {
-                                            Console.WriteLine($"{rowModelNumber}'s Firmware = {firmwareNumber}");
-                                        }
-                                        else
-                                        {
-                                            firmwareNumber = "No firmware found"; // Default message if no firmware found
-                                            Console.WriteLine($"{rowModelNumber}'s Firmware = {firmwareNumber}");
-                                        }
-
-                                        break; // Exit outer loop once processing is done
+                                        firmwareNumber = "No firmware found"; // Default message if no firmware found
+                                        Console.WriteLine($"{rowModelNumber}'s Firmware Number = {firmwareNumber}");
                                     }
+
+                                    break; // Exit loop once processing is done
                                 }
                             }
                         }
-
-                        if (!foundModel)
-                        {
-                            Console.WriteLine($"Model Number '{modelNumberInput}' not found in the Excel file.");
-                        }
                     }
 
-                    Console.WriteLine("Program stopped.");
+                    if (!foundModel)
+                    {
+                        Console.WriteLine($"Model Number '{modelNumberInput}' not found in the CSV file. Enter the Valid Model# : ");
+                        modelNumberInput = Console.ReadLine().Trim().ToUpper();
+                    }
+                    else
+                    {
+                        Console.WriteLine("Do you want to open the firmware folder? (Type 'Y' to open the FirmwareFile/ Enter Model# to look up for Firmware)");
+                        string openFolderAnswer = Console.ReadLine().Trim().ToUpper();
+
+                        if (openFolderAnswer == "Y")
+                        {
+                            string baseUrl = "https://vjtek.sharepoint.com/sites/SZMirror/RELEASED%20FIRMWARES/";
+                            string firmwareUrl = baseUrl + firmwareNumber;
+
+                            try
+                            {
+                                Process.Start(new ProcessStartInfo(firmwareUrl) { UseShellExecute = true });
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error opening the URL: {ex.Message}");
+                            }
+                        }
+                        else
+                        {
+                            modelNumberInput = openFolderAnswer;
+                        }
+
+                        
+                        
+                    }
                 }
+
+                Console.WriteLine("Program stopped.");
             }
+        }
+        catch (IOException ex)
+        {
+            Console.WriteLine($"Error reading the file: {ex.Message}");
         }
         catch (Exception ex)
         {
@@ -128,19 +187,63 @@ class Program
         }
     }
 
-    // Method to find firmware in previous rows
-    static bool FindFirmwareInPreviousRows(IXLWorksheet worksheet, int currentRowNumber, out string firmwareNumber)
+    static string ReadOrPromptForFilePath(string filePathText)
+    {
+        string csvFilePath = string.Empty;
+
+        try
+        {
+            if (File.Exists(filePathText))
+            {
+                csvFilePath = File.ReadAllText(filePathText).Trim();
+                Console.WriteLine($"Current CSV file path found in text file: {csvFilePath}");
+
+                Console.WriteLine("Do you want to update the existing CSV file path (type 'N' to continue with current, enter new path to update)?");
+                string updateAnswer = Console.ReadLine().Trim();
+
+                if (updateAnswer.Equals("N", StringComparison.OrdinalIgnoreCase))
+                {
+                    return csvFilePath; // Return the current file path if user chooses not to update
+                }
+                else
+                {
+                    csvFilePath = updateAnswer;
+                    File.WriteAllText(filePathText, csvFilePath);// Update with user-provided path
+                }
+            }
+
+                while (string.IsNullOrEmpty(csvFilePath))
+            {
+                Console.WriteLine("CSV file path not found in the text file or is empty. Please enter the path to the CSV file:");
+                csvFilePath = Console.ReadLine().Trim();
+
+                // Save the entered file path to the text file for future use
+                File.WriteAllText(filePathText, csvFilePath);
+                Console.WriteLine($"Saved CSV file path '{csvFilePath}' to the text file.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error accessing or writing to the text file: {ex.Message}");
+        }
+
+        return csvFilePath;
+    }
+
+    static bool FindFirmwareInPreviousRows(string[] csvLines, int currentRowIndex, out string firmwareNumber, out string firmwareFileName)
     {
         firmwareNumber = null;
+        firmwareFileName = null;
 
-        for (int rowNum = currentRowNumber - 1; rowNum >= 1; rowNum--)
+        for (int rowNum = currentRowIndex - 1; rowNum >= 0; rowNum--)
         {
-            var row = worksheet.Row(rowNum);
-            var firmwareNumberCell = row.Cell(2); // Assuming firmware number is in column B (2nd column)
+            var values = csvLines[rowNum].Split(',');
 
-            if (!firmwareNumberCell.IsEmpty())
+            // Ensure there are enough columns
+            if (values.Length >= 4)
             {
-                firmwareNumber = firmwareNumberCell.GetString();
+                firmwareNumber = values[1]; // Firmware number in column B
+                firmwareFileName = values[3]; // Firmware file name in column D
                 if (!string.IsNullOrEmpty(firmwareNumber))
                 {
                     return true; // Found firmware in previous row
